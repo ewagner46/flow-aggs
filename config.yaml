@@ -1,0 +1,17 @@
+# polling frequency in milliseconds for the worker_chan. longer
+# polling intervals will produce fewer DB updates overall
+db_worker_poll_interval_ms: 5
+
+# every poll_interval, the db worker will read and aggregate at most
+# db_worer_batch_size before submitting the aggregated updates to the db. 
+# it will stop early if the channel is empty.
+# capping it at this value  will ensure we don't buffer 
+# pending aggregations for too long when the server is under high load
+db_worker_batch_size: 5000
+
+# size of the channel where goroutines fielding POST requests can
+# write the updates for the worker to read. 
+# should meet or exceed the db_worker_batch_size
+db_worker_chan_size: 5000
+
+
