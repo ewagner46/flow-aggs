@@ -1,5 +1,11 @@
+###### Ddatabase Worker Config ######
+
+# how many database worker goroutines are spun up
+db_num_workers: 16
+
 # polling frequency in milliseconds for the worker_chan. longer
-# polling intervals will produce fewer DB updates overall
+# polling intervals will produce fewer DB updates overall, resulting
+# in higher throughput at the expense of slightly increased latency
 db_worker_poll_interval_ms: 5
 
 # every poll_interval, the db worker will read and aggregate at most
@@ -14,4 +20,13 @@ db_worker_batch_size: 5000
 # should meet or exceed the db_worker_batch_size
 db_worker_chan_size: 5000
 
+###### REST Config ######
+rest_api_host: "localhost"
+rest_api_port: 8080
 
+###### Embedded database Config ######
+
+db_data_location: "./internal/.embedded-postgres-go/extracted/data"
+db_binary_location: "./internal/.embedded-postgres-go/extracted"
+db_runtime_location: "./internal/.embedded-postgres-go/extracted"
+db_port: 5432

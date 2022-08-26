@@ -9,6 +9,9 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// all threads only write to the worker channels, which are thread safe
+var workerPool *DbWorkerPool
+
 type flowInfo struct {
 	SrcApp  *string `json:"src_app"`
 	DestApp *string `json:"dest_app"`
@@ -18,7 +21,8 @@ type flowInfo struct {
 	Hour    *int    `json:"hour"`
 }
 
-func InitRESTServer() error {
+func InitRESTServer(pool *DbWorkerPool) error {
+	workerPool = pool
 	router := gin.Default()
 	router.SetTrustedProxies([]string{"127.0.0.1"})
 	router.POST("/flows", postFlowInfo)
@@ -44,15 +48,22 @@ func parsePostJson(ctx *gin.Context) (*flowInfo, error) {
 }
 func postFlowInfo(ctx *gin.Context) {
 
-	flow, err := parsePostJson(ctx)
+	info, err := parsePostJson(ctx)
 	if err != nil {
 		ctx.IndentedJSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 		return
 	}
 
-	fmt.Printf("src_app:%s\ndest_app:%s\n,vpc_id:%s\nbytes_tx:%d\nbytes_rx:%d\nhour:%d\n",
-		*flow.SrcApp, *flow.DestApp, *flow.VpcID, *flow.BytesTx, *flow.BytesRx, *flow.Hour)
-	ctx.IndentedJSON(http.StatusCreated, flow)
+	err = WriteFlowLogToWorker(*workerPool, *info)
+	if err != nil {
+		ctx.IndentedJSON(http.StatusServiceUnavailable, gin.H{"message": err.Error()})
+	}
+
+	fmt.Printf("receive %s\n", *info.SrcApp)
+	//fmt.Printf("post receive src_app:%s\ndest_app:%s\n,vpc_id:%s\nbytes_tx:%d\nbytes_rx:%d\nhour:%d\n",
+	//	*info.SrcApp, *info.DestApp, *info.VpcID, *info.BytesTx, *info.BytesRx, *info.Hour)
+
+	ctx.IndentedJSON(http.StatusCreated, info)
 
 }
 
