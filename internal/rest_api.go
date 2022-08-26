@@ -54,7 +54,7 @@ func postFlowInfo(ctx *gin.Context) {
 		return
 	}
 
-	err = WriteFlowLogToWorker(*workerPool, *info)
+	err = workerPool.WriteFlowLogToWorker(*info)
 	if err != nil {
 		ctx.IndentedJSON(http.StatusServiceUnavailable, gin.H{"message": err.Error()})
 	}

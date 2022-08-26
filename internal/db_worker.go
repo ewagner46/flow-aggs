@@ -41,7 +41,7 @@ func hash(s string) (uint32, error) {
 // src_app + dest_app + vpc_id + hour so that message bursts can be batched into a
 // single database update per key.  if the channel remains full too long, we're backed
 // up on messages, probably waiting on a DB write
-func WriteFlowLogToWorker(workerPool DbWorkerPool, info flowInfo) error {
+func (workerPool *DbWorkerPool) WriteFlowLogToWorker(info flowInfo) error {
 	hashKey := *info.SrcApp + " " + *info.DestApp + " " + *info.VpcID + " " + strconv.Itoa(*info.Hour)
 	workerIx, err := hash(hashKey)
 	if err != nil {
@@ -66,7 +66,7 @@ func CreateDbWorkerPool() DbWorkerPool {
 	workerPool.config = getDbWorkerConfig()
 	for ix := uint32(0); ix < workerPool.numWorkers; ix++ {
 		workerPool.workers[ix] = createDbWorker(&workerPool.config)
-		go batchAndDbWrite(workerPool.workers[ix])
+		go workerPool.workers[ix].batchAndWriteDbUpdates()
 	}
 	return workerPool
 }
@@ -105,7 +105,7 @@ func createDbWorker(config *DbWorkerConfig) DbWorker {
 // Test code
 //
 //	Update README with multi writer
-func batchAndDbWrite(worker DbWorker) {
+func (worker *DbWorker) batchAndWriteDbUpdates() {
 	for {
 	batchLoop:
 		for {
