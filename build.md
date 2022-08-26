@@ -19,6 +19,3 @@ the top-level directory, where it can be run as
 
 See `config.yaml` for annotated configuration options and the `README.md`
 for additional context.
-
-Some tests and benchmarks are included also.
-
