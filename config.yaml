@@ -1,6 +1,7 @@
 ###### Ddatabase Worker Config ######
 
-# how many database worker goroutines are spun up
+# how many database batch worker goroutines are spun up
+# I set this to 2xcores on my machine
 db_num_workers: 16
 
 # polling frequency in milliseconds for the worker_chan. longer

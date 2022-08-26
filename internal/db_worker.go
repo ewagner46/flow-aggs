@@ -88,19 +88,6 @@ func (worker *DbWorker) initialize(id uint64, config DbWorkerConfig, db Embedded
 	return nil
 }
 
-// Read from channel,
-// Multiple workers keyed by hash on row modulo worker num
-// write updates from post into channel (must handle timeout)
-// instantiate db
-// batch updates
-// connect to db
-//
-// TODO
-// combine batch with what's in database, write to database
-// Handle get query (handle DB failure)
-// Test code
-// Update README with multi writer
-
 func (worker *DbWorker) combineStoredAndNewFlowInfo(newFlowInfo flowInfo) {
 	if err := worker.db.WriteFlowToDb(newFlowInfo); err != nil {
 		// we can do error specific handling, but inside sql.Exec it looks like there is already
