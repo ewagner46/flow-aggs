@@ -2,9 +2,9 @@ package internal
 
 import (
 	"fmt"
+	log "github.com/sirupsen/logrus"
 	"github.com/spf13/viper"
-	"hash/fnv"
-	"strconv"
+	"hash/maphash"
 	"time"
 )
 
@@ -12,44 +12,34 @@ const MaxWorkers int = 256
 
 type DbWorkerPool struct {
 	workers    [MaxWorkers]DbWorker
-	numWorkers uint32
+	numWorkers uint64
 	config     DbWorkerConfig
+	seed       maphash.Seed
 }
 
 type DbWorker struct {
 	ch     chan flowInfo
-	config *DbWorkerConfig
+	config DbWorkerConfig
+	id     uint64
+	db     EmbeddedDb
 }
 
 type DbWorkerConfig struct {
 	pollIntervalMs        int64
 	batchMaxSize          int
 	chanSize              int
-	channelWriteTimeoutMs int
-}
-
-func hash(s string) (uint32, error) {
-	h := fnv.New32a()
-	_, err := h.Write([]byte(s))
-	if err != nil {
-		return 0, err
-	}
-	return h.Sum32(), nil
+	channelWriteTimeoutMs int64
 }
 
 // WriteFlowLogToWorker writes to a consistent worker based unique row key
 // src_app + dest_app + vpc_id + hour so that message bursts can be batched into a
 // single database update per key.  if the channel remains full too long, we're backed
 // up on messages, probably waiting on a DB write
-func (workerPool *DbWorkerPool) WriteFlowLogToWorker(info flowInfo) error {
-	hashKey := *info.SrcApp + " " + *info.DestApp + " " + *info.VpcID + " " + strconv.Itoa(*info.Hour)
-	workerIx, err := hash(hashKey)
-	if err != nil {
-		return fmt.Errorf("error while hashing flow key: %s", err.Error())
-	}
-	workerIx = workerIx % workerPool.numWorkers
 
-	fmt.Printf("write %s to worker %d\n", hashKey, workerIx)
+func (workerPool *DbWorkerPool) WriteFlowLogToWorker(info flowInfo) error {
+	hashInput := info.UniqueId()
+	workerIx := maphash.String(workerPool.seed, hashInput) % workerPool.numWorkers
+
 	select {
 	case workerPool.workers[workerIx].ch <- info:
 	case <-time.After(time.Duration(workerPool.config.channelWriteTimeoutMs) * time.Millisecond):
@@ -59,16 +49,20 @@ func (workerPool *DbWorkerPool) WriteFlowLogToWorker(info flowInfo) error {
 
 }
 
-func CreateDbWorkerPool() DbWorkerPool {
+func CreateDbWorkerPool(db EmbeddedDb) (DbWorkerPool, error) {
 	var workerPool DbWorkerPool
 	viper.SetDefault("db_num_workers", 16)
-	workerPool.numWorkers = viper.GetUint32("db_num_workers")
+	workerPool.numWorkers = viper.GetUint64("db_num_workers")
 	workerPool.config = getDbWorkerConfig()
-	for ix := uint32(0); ix < workerPool.numWorkers; ix++ {
-		workerPool.workers[ix] = createDbWorker(&workerPool.config)
+	workerPool.seed = maphash.MakeSeed()
+
+	for ix := uint64(0); ix < workerPool.numWorkers; ix++ {
+		if err := workerPool.workers[ix].initialize(ix, workerPool.config, db); err != nil {
+			return workerPool, err
+		}
 		go workerPool.workers[ix].batchAndWriteDbUpdates()
 	}
-	return workerPool
+	return workerPool, nil
 }
 
 func getDbWorkerConfig() DbWorkerConfig {
@@ -77,50 +71,64 @@ func getDbWorkerConfig() DbWorkerConfig {
 	viper.SetDefault("db_worker_poll_interval_ms", 5)
 	viper.SetDefault("db_worker_batch_size", 5000)
 	viper.SetDefault("db_worker_chan_size", 5000)
+	viper.SetDefault("db_worker_chan_write_timeout_ms", 250)
 
 	config.pollIntervalMs = viper.GetInt64("db_worker_poll_interval_ms")
+	config.channelWriteTimeoutMs = viper.GetInt64("db_worker_chan_write_timeout_ms")
 	config.batchMaxSize = viper.GetInt("db_worker_batch_size")
 	config.chanSize = viper.GetInt("db_worker_chan_size")
 
 	return config
 }
-func createDbWorker(config *DbWorkerConfig) DbWorker {
-	var dbWorker DbWorker
-	dbWorker.config = config
-	dbWorker.ch = make(chan flowInfo, config.chanSize)
-	return dbWorker
+func (worker *DbWorker) initialize(id uint64, config DbWorkerConfig, db EmbeddedDb) error {
+	worker.config = config
+	worker.id = id
+	worker.ch = make(chan flowInfo, config.chanSize)
+	worker.db = db
+	return nil
 }
 
 // Read from channel,
 // Multiple workers keyed by hash on row modulo worker num
 // write updates from post into channel (must handle timeout)
 // instantiate db
+// batch updates
+// connect to db
 //
 // TODO
-// connect to db
-// batch updates
 // combine batch with what's in database, write to database
-// handle db failure
 // Handle get query (handle DB failure)
 // Test code
-//
-//	Update README with multi writer
+// Update README with multi writer
+
+func (worker *DbWorker) combineStoredAndNewFlowInfo(newFlowInfo flowInfo) {
+	if err := worker.db.WriteFlowToDb(newFlowInfo); err != nil {
+		// we can do error specific handling, but inside sql.Exec it looks like there is already
+		// retry logic for transient failure cases. If all retries failed, let's emit error and move on
+		log.Errorf("Error writing flow to database: %s\n", err.Error())
+	}
+}
 func (worker *DbWorker) batchAndWriteDbUpdates() {
 	for {
+		batch := make(map[string]flowInfo)
+		batchCount := 0
+
 	batchLoop:
 		for {
-			batch := 0
 			select {
 			case info, ok := <-worker.ch:
-				fmt.Printf("read %s\n", *info.SrcApp)
-				//fmt.Printf("read channel src_app:%s\ndest_app:%s\n,vpc_id:%s\nbytes_tx:%d\nbytes_rx:%d\nhour:%d\n",
-				//	*info.SrcApp, *info.DestApp, *info.VpcID, *info.BytesTx, *info.BytesRx, *info.Hour)
 				if !ok {
 					// channel closed
 					return
 				}
-				batch += 1
-				if batch == worker.config.batchMaxSize {
+				key := info.UniqueId()
+				if aggInfo, ok := batch[key]; ok {
+					info.Add(aggInfo)
+				}
+				batch[key] = info
+
+				batchCount += 1
+				if batchCount == worker.config.batchMaxSize {
 					// to avoid ending up in a non-batch state due to constant influx to the channel,
 					// cap the batch size and let a new batch build up to get the aggregation benefit
 					break batchLoop
@@ -129,6 +137,13 @@ func (worker *DbWorker) batchAndWriteDbUpdates() {
 				// channel is empty, let a new batch build up
 				break batchLoop
 			}
+		}
+		if batchCount > 0 {
+			log.Debugf("Batch updates after %d logs.\n", batchCount)
+		}
+
+		for _, info := range batch {
+			worker.combineStoredAndNewFlowInfo(info)
 		}
 		sleep := time.Duration(worker.config.pollIntervalMs) * time.Millisecond
 		time.Sleep(sleep)

@@ -15,8 +15,8 @@ func readConfig() error {
 	viper.SetConfigName("config")
 	return viper.ReadInConfig()
 }
-func cleanup(embeddedDb *internal.EmbeddedDb) {
-	if err := internal.StopDb(embeddedDb); err != nil {
+func cleanup(embeddedDb internal.EmbeddedDb) {
+	if err := embeddedDb.Stop(); err != nil {
 		log.Fatalf("Could not stop database: %s.  Exiting...\n", err.Error())
 	}
 	log.Infof("Stopped database.")
@@ -29,14 +29,14 @@ func main() {
 	}
 
 	log.Infof("Starting embedded database...")
-	embeddedDb, err := internal.StartDb()
-	if err != nil {
+	var embeddedDb internal.EmbeddedDb
+	if err := embeddedDb.Start(); err != nil {
 		log.Fatalf("Could not start database: %s. Exiting...", err.Error())
 	}
 
 	ch := make(chan os.Signal)
 	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
-	go func(embeddedDb *internal.EmbeddedDb) {
+	go func(embeddedDb internal.EmbeddedDb) {
 		<-ch
 		cleanup(embeddedDb)
 		os.Exit(1)
@@ -44,11 +44,20 @@ func main() {
 
 	log.Infof("Started embedded database.")
 
-	workerPool := internal.CreateDbWorkerPool()
+	var err error
+	if err := embeddedDb.Connect(); err != nil {
+		log.Fatalf("couldn't connect to the database: %s. Exiting...", err.Error())
+	}
+	log.Infof("Connected to the database.")
+
+	workerPool, err := internal.CreateDbWorkerPool(embeddedDb)
+	if err != nil {
+		cleanup(embeddedDb)
+		log.Fatalf("Failed to create database worker pool: %s. Exiting...", err.Error())
+	}
 	log.Infof("Created database worker pool.")
 
-	err = internal.InitRESTServer(&workerPool)
-	if err != nil {
+	if err = internal.InitRESTServer(&workerPool, embeddedDb); err != nil {
 		log.Fatalf("Could not start REST server: %s. Exiting...", err.Error())
 	}
 }

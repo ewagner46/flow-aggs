@@ -1,4 +1,4 @@
-.idea/
-flowaggs-server
-cmd/flowaggs-server/flowaggs-server
-internal/.embedded-postgres-go
+/.idea/
+/flowaggs-server
+/cmd/flowaggs-server/flowaggs-server
+/internal/.embedded-postgres-go

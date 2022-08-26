@@ -2,7 +2,7 @@ package internal
 
 import (
 	"errors"
-	"fmt"
+	"github.com/spf13/viper"
 	"net/http"
 	"strconv"
 
@@ -11,24 +11,22 @@ import (
 
 // all threads only write to the worker channels, which are thread safe
 var workerPool *DbWorkerPool
+var embeddedDb EmbeddedDb
 
-type flowInfo struct {
-	SrcApp  *string `json:"src_app"`
-	DestApp *string `json:"dest_app"`
-	VpcID   *string `json:"vpc_id"`
-	BytesTx *int    `json:"bytes_tx"`
-	BytesRx *int    `json:"bytes_rx"`
-	Hour    *int    `json:"hour"`
-}
-
-func InitRESTServer(pool *DbWorkerPool) error {
+func InitRESTServer(pool *DbWorkerPool, db EmbeddedDb) error {
 	workerPool = pool
+	embeddedDb = db
 	router := gin.Default()
-	router.SetTrustedProxies([]string{"127.0.0.1"})
+	if err := router.SetTrustedProxies([]string{"127.0.0.1"}); err != nil {
+		return err
+	}
 	router.POST("/flows", postFlowInfo)
 	router.GET("/flows", getFlowInfoByHour)
 
-	if err := router.Run("localhost:8080"); err != nil {
+	viper.SetDefault("rest_api_host", "localhost")
+	viper.SetDefault("rest_api_port", 8080)
+
+	if err := router.Run(viper.GetString("rest_api_host") + ":" + strconv.Itoa(viper.GetInt("rest_api_port"))); err != nil {
 		return err
 	}
 	return nil
@@ -57,12 +55,8 @@ func postFlowInfo(ctx *gin.Context) {
 	err = workerPool.WriteFlowLogToWorker(*info)
 	if err != nil {
 		ctx.IndentedJSON(http.StatusServiceUnavailable, gin.H{"message": err.Error()})
+		return
 	}
-
-	fmt.Printf("receive %s\n", *info.SrcApp)
-	//fmt.Printf("post receive src_app:%s\ndest_app:%s\n,vpc_id:%s\nbytes_tx:%d\nbytes_rx:%d\nhour:%d\n",
-	//	*info.SrcApp, *info.DestApp, *info.VpcID, *info.BytesTx, *info.BytesRx, *info.Hour)
-
 	ctx.IndentedJSON(http.StatusCreated, info)
 
 }
@@ -70,16 +64,16 @@ func postFlowInfo(ctx *gin.Context) {
 func parseHourArg(ctx *gin.Context) (int, error) {
 	args := ctx.Request.URL.Query()
 	var hour int
-	hourVals, present := args["hour"]
+	hourVal, present := args["hour"]
 	if present == false {
 		return -1, errors.New("missing required argument 'hour'")
 	}
 
-	if len(hourVals) != 1 {
+	if len(hourVal) != 1 {
 		return -1, errors.New("too many 'hour' args supplied")
 	}
 
-	hour, err := strconv.Atoi(hourVals[0])
+	hour, err := strconv.Atoi(hourVal[0])
 	if err != nil {
 		return -1, errors.New("malformed required argument 'hour'")
 	}
@@ -93,6 +87,10 @@ func getFlowInfoByHour(ctx *gin.Context) {
 		return
 	}
 
-	fmt.Printf("hour=%d\n", hour)
-	ctx.IndentedJSON(http.StatusOK, nil)
+	entries, err := embeddedDb.ReadHourFromDb(hour)
+	if err != nil {
+		ctx.IndentedJSON(http.StatusInternalServerError, gin.H{"message": "error reading flow from db: " + err.Error()})
+		return
+	}
+	ctx.IndentedJSON(http.StatusOK, entries)
 }
